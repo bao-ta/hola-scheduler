@@ -1,0 +1,131 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { verifyBasicAuth } from '@/lib/auth';
+import prisma from '@/lib/prisma';
+import { createHash } from 'crypto';
+
+const PROTECTED_PATHS: string[] = [
+  '/api/users',                  
+export async function middleware(request: NextRequest) {
+  const { pathname } = request.nextUrl;
+
+
+  if (!PROTECTED_PATHS.some(path => pathname.startsWith(path))) {
+    return NextResponse.next();
+  }
+
+  const authHeader = request.headers.get('authorization');
+
+  if (!authHeader || !authHeader.startsWith('Basic ')) {
+    return new NextResponse(
+      JSON.stringify({ error: 'Authorization required' }),
+      {
+        status: 401,
+        headers: { 'WWW-Authenticate': 'Basic realm="Secure Area"' },
+      }
+    );
+  }
+
+  const user = await verifyBasicAuth(authHeader);
+
+  if (!user) {
+    return new NextResponse(
+      JSON.stringify({ error: 'Invalid credentials' }),
+      {
+        status: 401,
+        headers: { 'WWW-Authenticate': 'Basic realm="Secure Area"' },
+      }
+    );
+  }
+
+
+  if (pathname.startsWith('/api/users') && user.role !== 'scheduler') {
+    return NextResponse.json(
+      { error: 'Forbidden - Scheduler role required' },
+      { status: 403 }
+    );
+  }
+
+  // Forward request with user info in headers
+  const requestHeaders = new Headers(request.headers);
+  requestHeaders.set('x-user-id', user.id.toString());
+  requestHeaders.set('x-user-role', user.role || '');
+  requestHeaders.set('x-user-username', user.username);
+
+  const response = NextResponse.next({
+    request: {
+      headers: requestHeaders,
+    },
+  });
+
+  return response;
+}
+
+
+export const config = {
+  matcher: [
+    '/api/users/:path*',
+
+  ],
+};
+
+
+
+
+export function hashPassword(password: string): string {
+    return createHash('sha256').update(password).digest('hex');
+}
+
+
+export async function verifyBasicAuth(authHeader: string): Promise<Omit<AppUser, 'password'> | null> {
+    try {
+
+        const base64Credentials = authHeader.replace('Basic ', '');
+        const credentials = Buffer.from(base64Credentials, 'base64').toString('utf-8');
+        const [username, password] = credentials.split(':');
+        if (!username || !password) return null;
+
+        const hashedPassword = hashPassword(password);
+
+
+        const user = await prisma.appUser.findUnique({
+            where: { username },
+        });
+
+
+        if (!user || user.password !== hashedPassword) {
+            return null;
+        }
+
+        // Return user object without password
+        const { password: _, ...safeUser } = user;
+        return safeUser;
+    } catch (error) {
+        console.error('Error in verifyBasicAuth:', error);
+        return null;
+    }
+}
+
+
+// export async function middleware(request: NextRequest) {
+//   const authHeader = request.headers.get('authorization') || request.cookies.get('auth_token')?.value;
+
+//   if (!authHeader || !authHeader.startsWith('Basic ')) {
+//     return new NextResponse(JSON.stringify({ error: 'Unauthorized' }), { status: 401 });
+//   }
+
+//   const user = await verifyBasicAuth(authHeader);
+//   if (!user) {
+//     return new NextResponse(JSON.stringify({ error: 'Invalid credentials' }), { status: 401 });
+//   }
+
+//   const requestHeaders = new Headers(request.headers);
+//   requestHeaders.set('x-user-id', user.id.toString());
+//   requestHeaders.set('x-user-role', user.role ?? '');
+//   requestHeaders.set('x-user-username', user.username);
+
+//   return NextResponse.next({ request: { headers: requestHeaders } });
+// }
+
+// export const config = {
+//   matcher: ['/api/protected/:path*'], // Only apply to selected routes
+// };
